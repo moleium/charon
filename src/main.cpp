@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "utils/console.hpp"
+#include "utils/logger.hpp"
 #include "utils/pattern.hpp"
 
 import zydis;
@@ -28,7 +29,7 @@ namespace patcher {
     }
 
     const auto target_addr = static_cast<std::uintptr_t>(*find_result);
-    std::println("pattern found at: {:#x}", target_addr);
+    utils::log("pattern found at: {:#x}", target_addr);
 
     using namespace zydis::assembler;
     code_block patch_block;
@@ -76,21 +77,21 @@ namespace proxy {
     while (true) {
       auto read_result = source.read(buffer.data(), buffer.size());
       if (!read_result) {
-        std::println("[{}] connection closed or read error: {}", direction, read_result.error_message());
+        utils::log("[{}] connection closed or read error: {}", direction, read_result.error_message());
         break;
       }
 
       size_t bytes_read = read_result.value();
       if (bytes_read == 0) {
-        std::println("[{}] connection gracefully closed.", direction);
+        utils::log("[{}] connection gracefully closed.", direction);
         break;
       }
 
-      std::println("[{}] relaying {} bytes", direction, bytes_read);
+      utils::log("[{}] relaying {} bytes", direction, bytes_read);
 
       auto write_result = destination.write_n(buffer.data(), bytes_read);
       if (!write_result) {
-        std::println("[{}] write error: {}", direction, write_result.error_message());
+        utils::log("[{}] write error: {}", direction, write_result.error_message());
         break;
       }
     }
@@ -104,7 +105,7 @@ namespace proxy {
     if (!acceptor) {
       return std::unexpected("failed to create tcp acceptor");
     }
-    std::println("proxy listening on port {}", acceptor.address().port());
+    utils::log("proxy listening on port {}", acceptor.address().port());
 
     auto accept_result = acceptor.accept();
     if (!accept_result) {
@@ -112,13 +113,13 @@ namespace proxy {
     }
 
     sockpp::tcp_socket client_socket = accept_result.release();
-    std::println("client connected from {}", client_socket.peer_address().to_string());
+    utils::log("client connected from {}", client_socket.peer_address().to_string());
 
     sockpp::tcp_connector remote_socket;
     if (!remote_socket.connect({remote_host.data(), local_port})) {
       return std::unexpected("failed to connect to remote server");
     }
-    std::println("successfully connected to remote server {}", remote_socket.address().to_string());
+    utils::log("successfully connected to remote server {}", remote_socket.address().to_string());
 
     auto remote_clone_res = remote_socket.clone();
     if (!remote_clone_res) {
@@ -144,17 +145,17 @@ namespace patcher {
   void main_thread() {
     utils::show_console();
     if (!zydis::init(ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64, ZYDIS_FORMATTER_STYLE_INTEL)) {
-      std::println("failed to initialize zydis");
+      utils::log("failed to initialize zydis");
       return;
     }
 
     if (auto result = apply_patch(); result.has_value()) {
-      std::println("patch applied successfully");
+      utils::log("patch applied successfully");
       if (auto proxy_result = proxy::run_proxy(); !proxy_result.has_value()) {
-        std::println("proxy failed to start: {}", proxy_result.error());
+        utils::log("proxy failed to start: {}", proxy_result.error());
       }
     } else {
-      std::println("patch failed: {}", result.error());
+      utils::log("patch failed: {}", result.error());
     }
   }
 } // namespace patcher
