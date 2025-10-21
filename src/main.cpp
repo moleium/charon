@@ -1,9 +1,12 @@
+// clang-format off
 #include "sockpp/tcp_acceptor.h"
 #include "sockpp/tcp_connector.h"
+#include "sockpp/udp_socket.h"
 #include "sockpp/version.h"
 
 #include <Windows.h>
 #include <cstdint>
+#include <exception>
 #include <expected>
 #include <print>
 #include <ranges>
@@ -13,10 +16,12 @@
 
 #include "utils/console.hpp"
 #include "utils/logger.hpp"
+#include "utils/packet.hpp"
 #include "utils/pattern.hpp"
 
 import zydis;
 import address;
+// clang-format on
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -80,72 +85,155 @@ namespace proxy {
   constexpr uint16_t local_port = 7853;
   constexpr std::string_view remote_host = "78.138.44.207";
 
-  void relay_data(sockpp::tcp_socket source, sockpp::tcp_socket destination, std::string_view direction) {
+  void run_udp_proxy(const std::string& remote_ip, uint16_t game_port, const std::string& room_key_str) {
+    utils::log("starting udp proxy for remote {}:{}", remote_ip, game_port);
+    sockpp::udp_socket local_socket(game_port);
+    if (!local_socket) {
+      utils::log("failed to create udp socket on port {}", game_port);
+      return;
+    }
+    utils::log("udp proxy listening on port {}", game_port);
+
     std::vector<char> buffer(4096);
+    sockpp::inet_address client_addr;
+    sockpp::inet_address remote_addr(remote_ip, game_port);
+    bool client_addr_known = false;
 
     while (true) {
-      auto read_result = source.read(buffer.data(), buffer.size());
-      if (!read_result) {
-        utils::log("[{}] connection closed or read error: {}", direction, read_result.error_message());
-        break;
+      sockpp::inet_address src_addr;
+      auto read_res = local_socket.recv_from(buffer.data(), buffer.size(), &src_addr);
+      if (!read_res || read_res.value() <= 0)
+        continue;
+
+      ssize_t n = read_res.value();
+
+      bool is_from_client = src_addr.port() != remote_addr.port();
+      if (is_from_client && !client_addr_known) {
+        client_addr = src_addr;
+        client_addr_known = true;
+        utils::log("udp client registered from {}", client_addr.to_string());
       }
 
-      size_t bytes_read = read_result.value();
-      if (bytes_read == 0) {
-        utils::log("[{}] connection gracefully closed.", direction);
-        break;
-      }
-
-      utils::log("[{}] relaying {} bytes", direction, bytes_read);
-
-      auto write_result = destination.write_n(buffer.data(), bytes_read);
-      if (!write_result) {
-        utils::log("[{}] write error: {}", direction, write_result.error_message());
-        break;
+      if (is_from_client) {
+        utils::log("udp c->s: forwarding {} bytes to remote {}", n, remote_addr.to_string());
+        local_socket.send_to(buffer.data(), n, remote_addr);
+      } else if (client_addr_known) {
+        utils::log("udp s->c: forwarding {} bytes to client {}", n, client_addr.to_string());
+        local_socket.send_to(buffer.data(), n, client_addr);
       }
     }
+  }
+
+  void relay_tcp(sockpp::tcp_socket source, sockpp::tcp_socket destination, std::string_view direction) {
+    utils::log("starting relay: {}", direction);
+    bool is_client_to_server = (direction == "CLIENT -> SERVER");
+
+    try {
+      if (is_client_to_server) {
+        std::vector<char> header(5);
+        if (auto read_result = source.read_n(header.data(), 5); !read_result || read_result.value() != 5)
+          return;
+
+        int32_t len;
+        memcpy(&len, header.data() + 1, 4);
+        std::vector<char> body(len - 5);
+
+        if (auto read_result = source.read_n(body.data(), body.size());
+            !read_result || read_result.value() != body.size())
+          return;
+
+        utils::log("[{}] relayed initial plaintext auth packet, size: {}", direction, len);
+        destination.write_n(header.data(), 5);
+        destination.write_n(body.data(), body.size());
+      }
+
+      while (true) {
+        packet::tcp::header header;
+        if (auto read_result = source.read_n(&header, sizeof(header));
+            !read_result || read_result.value() != sizeof(header))
+          break;
+
+        utils::log(
+          "[{}] read header: enc_len={}, dec_len={}", direction, header.encrypted_length, header.decompressed_length
+        );
+
+        std::vector<uint8_t> encrypted_data(header.encrypted_length);
+        if (auto read_result = source.read_n(encrypted_data.data(), header.encrypted_length);
+            !read_result || read_result.value() != header.encrypted_length)
+          break;
+
+        auto processed = packet::tcp::process(header, encrypted_data);
+        if (processed) {
+          std::string name = "unknown";
+          if (processed->content.contains("data") && processed->content["data"].contains("name")) {
+            name = processed->content["data"]["name"];
+          }
+          utils::log("[{}] packet: {}", direction, name);
+
+          utils::log("[{}] packet body:\n{}", direction, processed->content.dump(2));
+
+          if (direction == "SERVER -> CLIENT" && name == "mrooms.join_room") {
+            packet::tcp::handle_join(processed->content, "127.0.0.1", [](auto ip, auto port, auto key) {
+              std::thread(run_udp_proxy, ip, port, key).detach();
+            });
+            auto rebuilt = packet::tcp::rebuild(processed->content, processed->original_unk_byte, processed->iv);
+            destination.write_n(&rebuilt.new_header, sizeof(rebuilt.new_header));
+            destination.write_n(rebuilt.new_encrypted_data.data(), rebuilt.new_encrypted_data.size());
+            continue;
+          }
+        } else {
+          utils::log("[{}] failed to process packet, forwarding raw data", direction);
+        }
+
+        destination.write_n(&header, sizeof(header));
+        destination.write_n(encrypted_data.data(), encrypted_data.size());
+      }
+    } catch (const std::exception& e) {
+      utils::log("exception in relay {}: {}", direction, e.what());
+    } catch (...) {
+      utils::log("unknown exception in relay {}", direction);
+    }
+
+    utils::log("relay {} shutting down", direction);
     destination.shutdown();
+  }
+
+  void handle_conn(sockpp::tcp_socket client_socket) {
+    utils::log("client connected from {}", client_socket.peer_address().to_string());
+    sockpp::tcp_connector remote_socket;
+
+    if (!remote_socket.connect({std::string(remote_host), local_port})) {
+      utils::log("failed to connect to remote host {}", remote_host);
+      return;
+    }
+    utils::log("connected to remote {}", remote_socket.peer_address().to_string());
+
+    auto remote_clone_res = remote_socket.clone();
+    auto client_clone_res = client_socket.clone();
+    if (!remote_clone_res || !client_clone_res) {
+      utils::log("failed to clone sockets for threading");
+      return;
+    }
+
+    std::thread(relay_tcp, std::move(client_socket), remote_clone_res.release(), "CLIENT -> SERVER").detach();
+    std::thread(relay_tcp, std::move(remote_socket), client_clone_res.release(), "SERVER -> CLIENT").detach();
   }
 
   [[nodiscard]] std::expected<void, const char*> run_proxy() {
     sockpp::initialize();
-
     sockpp::tcp_acceptor acceptor(local_port);
     if (!acceptor) {
-      return std::unexpected("failed to create tcp acceptor");
+      return std::unexpected("failed to create tcp acceptor on port 7853");
     }
     utils::log("proxy listening on port {}", acceptor.address().port());
 
-    auto accept_result = acceptor.accept();
-    if (!accept_result) {
-      return std::unexpected("failed to accept client connection");
+    while (true) {
+      if (auto accept_result = acceptor.accept()) {
+        std::thread(handle_conn, accept_result.release()).detach();
+      } else {
+        utils::log("accept error: {}", accept_result.error_message());
+      }
     }
-
-    sockpp::tcp_socket client_socket = accept_result.release();
-    utils::log("client connected from {}", client_socket.peer_address().to_string());
-
-    sockpp::tcp_connector remote_socket;
-    if (!remote_socket.connect({remote_host.data(), local_port})) {
-      return std::unexpected("failed to connect to remote server");
-    }
-    utils::log("successfully connected to remote server {}", remote_socket.address().to_string());
-
-    auto remote_clone_res = remote_socket.clone();
-    if (!remote_clone_res) {
-      return std::unexpected("failed to clone remote socket");
-    }
-
-    auto client_clone_res = client_socket.clone();
-    if (!client_clone_res) {
-      return std::unexpected("failed to clone client socket");
-    }
-
-    std::jthread client_server(relay_data, std::move(client_socket), remote_clone_res.release(), "CLIENT -> SERVER");
-    std::jthread server_client(relay_data, std::move(remote_socket), client_clone_res.release(), "SERVER -> CLIENT");
-
-    client_server.detach();
-    server_client.detach();
-
     return {};
   }
 } // namespace proxy
