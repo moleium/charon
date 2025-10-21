@@ -16,53 +16,62 @@
 #include "utils/pattern.hpp"
 
 import zydis;
+import address;
 
 #pragma comment(lib, "Ws2_32.lib")
 
 namespace patcher {
   std::expected<void, const char*> apply_patch() {
-    constexpr std::string_view call_pattern = "E8 ?? ?? ?? ?? 0F B6 44 24 ?? 89 C1 C1 E9 ?? 48 8D 3D";
-
-    auto find_result = utils::pattern::find(call_pattern);
-    if (!find_result) {
-      return std::unexpected("failed to find call pattern");
+    auto patch_site_exp = utils::pattern::find("E8 ?? ?? ?? ?? 0F B6 44 24 ?? 89 C1 C1 E9 ?? 48 8D 3D");
+    if (!patch_site_exp) {
+      return std::unexpected("pattern not found");
     }
+    utils::address patch_site = *patch_site_exp;
+    utils::log("pattern found at: {:#x}", patch_site);
 
-    const auto target_addr = static_cast<std::uintptr_t>(*find_result);
-    utils::log("pattern found at: {:#x}", target_addr);
+    auto* payload_mem = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!payload_mem) {
+      return std::unexpected("failed to allocate memory");
+    }
 
     using namespace zydis::assembler;
-    code_block patch_block;
+    code_block payload;
+    payload << mov(registers::rax, 0x0101010101010101);
+    payload << mov(qword_ptr(registers::rdx, 0), registers::rax);
+    payload << mov(qword_ptr(registers::rdx, 8), registers::rax);
+    payload << ret();
 
-    patch_block << instruction(ZYDIS_MNEMONIC_XOR, registers::eax, registers::eax);
-    patch_block << mov(qword_ptr(registers::rdx, 0), registers::rax);
-    patch_block << mov(qword_ptr(registers::rdx, 8), registers::rax);
+    auto encoded_payload = payload.encode();
+    std::ranges::copy(encoded_payload, static_cast<uint8_t*>(payload_mem));
 
-    auto patch_bytes = patch_block.encode();
+    code_block trampoline;
+    trampoline << mov(registers::rax, reinterpret_cast<uintptr_t>(payload_mem));
+    trampoline << instruction(ZYDIS_MNEMONIC_CALL, registers::rax);
 
-    size_t overwritten_length = 0;
-    for (int i = 0; i < 2; ++i) {
-      auto instr = zydis::disassemble(reinterpret_cast<uint8_t*>(target_addr + overwritten_length));
+    auto trampoline_bytes = trampoline.encode();
+
+    size_t overwritten_len = 0;
+    while (overwritten_len < trampoline_bytes.size()) {
+      auto instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site) + overwritten_len);
       if (!instr) {
+        VirtualFree(payload_mem, 0, MEM_RELEASE);
         return std::unexpected("failed to disassemble original code");
       }
-      overwritten_length += instr->decoded.length;
+      overwritten_len += instr->decoded.length;
     }
 
-    if (overwritten_length < patch_bytes.size()) {
-      return std::unexpected("patch size mismatch");
-    }
+    std::vector<uint8_t> final_patch = trampoline_bytes;
+    final_patch.resize(overwritten_len, 0x90);
 
-    DWORD old_protection = 0;
-    if (!VirtualProtect(
-          reinterpret_cast<void*>(target_addr), patch_bytes.size(), PAGE_EXECUTE_READWRITE, &old_protection
-        )) {
+    DWORD old_prot = 0;
+    if (!VirtualProtect(patch_site, final_patch.size(), PAGE_EXECUTE_READWRITE, &old_prot)) {
+      VirtualFree(payload_mem, 0, MEM_RELEASE);
       return std::unexpected("failed to change memory protection");
     }
 
-    std::ranges::copy(patch_bytes, reinterpret_cast<unsigned char*>(target_addr));
+    std::ranges::copy(final_patch, static_cast<uint8_t*>(patch_site));
+    VirtualProtect(patch_site, final_patch.size(), old_prot, &old_prot);
 
-    VirtualProtect(reinterpret_cast<void*>(target_addr), patch_bytes.size(), old_protection, &old_protection);
     return {};
   }
 } // namespace patcher
