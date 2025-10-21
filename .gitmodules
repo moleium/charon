@@ -4,3 +4,9 @@
 [submodule "vendor/zydis-bridge"]
 	path = vendor/zydis-bridge
 	url = https://github.com/bibles-org/zydis-bridge
+[submodule "vendor/lz4"]
+	path = vendor/lz4
+	url = https://github.com/lz4/lz4
+[submodule "vendor/json"]
+	path = vendor/json
+	url = https://github.com/nlohmann/json

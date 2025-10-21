@@ -10,6 +10,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_subdirectory(vendor/sockpp)
 add_subdirectory(vendor/zydis-bridge)
+add_subdirectory(vendor/lz4/build/cmake)
+add_subdirectory(vendor/json)
 
 add_library(${PROJECT_NAME} SHARED
   src/main.cpp
@@ -22,4 +24,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
   sockpp-shared
   zydis-bridge
+  lz4
+  nlohmann_json::nlohmann_json 
 )
