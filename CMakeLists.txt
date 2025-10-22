@@ -26,6 +26,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   sockpp-shared
   zydis-bridge
   lz4
-  nlohmann_json::nlohmann_json 
+  nlohmann_json::nlohmann_json
   tiny-aes
+
+  ws2_32
 )
