@@ -19,7 +19,7 @@ using namespace zydis::assembler;
 
 namespace patcher {
   inline std::expected<void, const char*> apply_patch() {
-    auto patch_site_exp = utils::pattern::find("E8 ?? ?? ?? ?? 0F B6 44 24 ?? 89 C1 C1 E9 ?? 48 8D 3D");
+    auto patch_site_exp = utils::pattern::find("E8 ? ? ? ? 0F B6 44 24 ? 89 C1 C1 E9");
     if (!patch_site_exp) {
       return std::unexpected("pattern not found");
     }

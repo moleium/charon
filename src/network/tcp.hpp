@@ -75,6 +75,8 @@ namespace proxy {
 
           utils::log("[{}] packet body:\n{}", direction, processed->content.dump(2));
 
+          /*
+          // TODO: add back in when we have a working udp proxy (reencryption)
           if (direction == "SERVER -> CLIENT" && name == "mrooms.join_room") {
             packet::tcp::handle_join(processed->content, "127.0.0.1", [](auto ip, auto port, auto key) {
               std::thread(run_udp, ip, port, key).detach();
@@ -84,6 +86,7 @@ namespace proxy {
             destination.write_n(rebuilt.new_encrypted_data.data(), rebuilt.new_encrypted_data.size());
             continue;
           }
+          */
         } else {
           utils::log("[{}] failed to process packet, forwarding raw data", direction);
         }

@@ -8,6 +8,8 @@
 #include <utils/console.hpp>
 #include <utils/logger.hpp>
 
+#pragma comment(lib, "Ws2_32.lib")
+
 import zydis;
 // clang-format on
 
