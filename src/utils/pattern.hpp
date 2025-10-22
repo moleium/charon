@@ -51,7 +51,7 @@ namespace utils::pattern {
         }
 
         std::uint8_t byte{};
-        if (std::from_chars(it, it + 2, byte, 16).ec != std::errc()) {
+        if (std::from_chars(&*it, &*(it + 2), byte, 16).ec != std::errc()) {
           return std::unexpected(error::malformed_pattern);
         }
 
