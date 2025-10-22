@@ -193,8 +193,11 @@ namespace proxy::packet {
     const __m128i key1 = _mm_set_epi32(2146121005, 2146121005, 2146121005, 2146121005);
     const __m128i key2 = _mm_set_epi32(-2073254261, -2073254261, -2073254261, -2073254261);
 
-    [[gnu::target("sse4.1")]]
+    //[[gnu::target("sse4.1")]]
     std::vector<uint8_t> generate_iv(uint8_t first_byte, int packet_length) {
+      /*
+      // TODO: add back in when we have a working udp proxy (reencryption)
+
       int v0 = ((packet_length - 1) << 16) | (first_byte << 8);
       __m128i vec = _mm_set_epi32(v0 + 3, v0 + 2, v0 + 1, v0);
       __m128i iv = _mm_xor_si128(vec, _mm_set1_epi32(packet_length - 1));
@@ -205,6 +208,8 @@ namespace proxy::packet {
       std::vector<uint8_t> result(16);
       _mm_storeu_si128(reinterpret_cast<__m128i*>(result.data()), iv);
       return result;
+      */
+      return std::vector<uint8_t>(16, 0);
     }
   } // namespace udp
 } // namespace proxy::packet
