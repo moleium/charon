@@ -35,7 +35,7 @@ Then modify your system `hosts` file and add an entry to redirect this domain to
 
 Additionally, the IP address of the server is hardcoded in the [patcher](src/utils/patcher.hpp). You need to find the real IP address of the game server from Step 1.
 
-**Note**: The pattern used to find the patching location in the [patcher](src/utils/patcher.hpp) is hardcoded for a specific version of Something Thunder.
+**Note**: The pattern used to find the patching location in the [patcher](src/utils/patcher.hpp) is hardcoded for a specific version of [redacted].
 
 ## Disclaimer
 

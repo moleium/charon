@@ -1,74 +1,87 @@
 #pragma once
 
-// clang-format off
-#include <winsock2.h>
-#include <Windows.h>
-#include <cstdint>
+#include <cstring>
 #include <expected>
 #include <ranges>
 #include <vector>
 
 #include <utils/logger.hpp>
-#include <utils/pattern.hpp>
+#include <utils/platform.hpp>
+#include <utils/process.hpp>
 
 import zydis;
 import address;
-// clang-format on
 
 using namespace zydis::assembler;
 
 namespace patcher {
-  inline std::expected<void, const char*> apply_patch() {
-    auto patch_site_exp = utils::pattern::find("E8 ? ? ? ? 0F B6 44 24 ? 89 C1 C1 E9");
-    if (!patch_site_exp) {
-      return std::unexpected("pattern not found");
-    }
-    utils::address patch_site = *patch_site_exp;
-    utils::log("pattern found at: {:#x}", patch_site);
+  inline std::expected<void, std::string> apply_patch() {
+    const auto anchor = "-----BEGIN PUBLIC KEY-----\nMIIBIj";
 
-    auto* payload_mem = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!payload_mem) {
-      return std::unexpected("failed to allocate memory");
+    auto patch_site_exp = utils::process::find_call(anchor);
+    if (!patch_site_exp) {
+      return std::unexpected(patch_site_exp.error());
     }
+
+    utils::address patch_site = *patch_site_exp;
+    utils::log("target call found at: {:#x}", patch_site);
+
+    const size_t alloc_size = 4096;
+    auto* mem = utils::platform::allocate_exec_trampoline(alloc_size);
+    if (!mem)
+      return std::unexpected("failed to allocate memory for payload");
+
+    uint8_t* mem_byte = static_cast<uint8_t*>(mem);
+
+    uint8_t* static_buffer = mem_byte + 2048;
+    std::memset(static_buffer, 0x01, 256);
 
     code_block payload;
+
+#ifdef CHARON_WINDOWS
     payload << mov(registers::rax, 0x0101010101010101);
     payload << mov(qword_ptr(registers::rdx, 0), registers::rax);
     payload << mov(qword_ptr(registers::rdx, 8), registers::rax);
     payload << ret();
+#else
+    payload << mov(registers::rax, 0x0101010101010101);
+    payload << mov(qword_ptr(registers::rdi, 0), registers::rax);
+    payload << mov(qword_ptr(registers::rdi, 8), registers::rax);
+    payload << ret();
+#endif
 
     auto encoded_payload = payload.encode();
-    std::ranges::copy(encoded_payload, static_cast<uint8_t*>(payload_mem));
+    std::memcpy(mem_byte, encoded_payload.data(), encoded_payload.size());
 
     code_block trampoline;
-    trampoline << mov(registers::rax, reinterpret_cast<uintptr_t>(payload_mem));
+    trampoline << mov(registers::rax, reinterpret_cast<uintptr_t>(mem));
     trampoline << instruction(ZYDIS_MNEMONIC_CALL, registers::rax);
 
     auto trampoline_bytes = trampoline.encode();
 
+    auto original_instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site));
+    if (!original_instr)
+      return std::unexpected("failed to decode instruction at patch site");
+
     size_t overwritten_len = 0;
     while (overwritten_len < trampoline_bytes.size()) {
       auto instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site) + overwritten_len);
-      if (!instr) {
-        VirtualFree(payload_mem, 0, MEM_RELEASE);
-        return std::unexpected("failed to disassemble original code");
-      }
+      if (!instr)
+        return std::unexpected("failed to disassemble during overwrite calculation");
       overwritten_len += instr->decoded.length;
     }
 
     std::vector<uint8_t> final_patch = trampoline_bytes;
-    final_patch.resize(overwritten_len, nop().encode()[0]);
-
-    DWORD old_prot = 0;
-    if (!VirtualProtect(patch_site, final_patch.size(), PAGE_EXECUTE_READWRITE, &old_prot)) {
-      VirtualFree(payload_mem, 0, MEM_RELEASE);
-      return std::unexpected("failed to change memory protection");
+    while (final_patch.size() < overwritten_len) {
+      final_patch.push_back(0x90); // nop
     }
 
-    std::ranges::copy(final_patch, static_cast<uint8_t*>(patch_site));
-    VirtualProtect(patch_site, final_patch.size(), old_prot, &old_prot);
+    {
+      utils::platform::protection_guard guard(patch_site, final_patch.size(), true);
+      std::memcpy(patch_site, final_patch.data(), final_patch.size());
+    }
 
+    utils::log("patch applied successfully, overwrote {} bytes", overwritten_len);
     return {};
   }
-}
-
+} // namespace patcher

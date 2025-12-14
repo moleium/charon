@@ -4,6 +4,8 @@ project(charon)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -28,6 +30,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   lz4
   nlohmann_json::nlohmann_json
   tiny-aes
-
-  ws2_32
 )
+
+if(WIN32)
+  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+endif()
