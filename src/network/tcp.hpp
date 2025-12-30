@@ -5,6 +5,7 @@
 #include "sockpp/tcp_connector.h"
 #include "sockpp/tcp_socket.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -34,47 +35,58 @@ namespace proxy {
     try {
       while (true) {
         packet::tcp::header header{};
+
         if (auto read_result = source.read_n(&header, sizeof(header));
             !read_result || read_result.value() != sizeof(header))
           break;
 
         utils::log(
-          "[{}] read header: enc_len={}, dec_len={}", direction, header.encrypted_length, header.decompressed_length
+          "[{}] read header: type={}, comp_len={}, dec_len={}", direction, (int)header.type, header.compressed_len,
+          header.decompressed_len
         );
 
-        std::vector<uint8_t> encrypted_data(header.encrypted_length);
-        if (auto read_result = source.read_n(encrypted_data.data(), header.encrypted_length);
-            !read_result || read_result.value() != header.encrypted_length)
+        if (header.compressed_len > 1000000 || header.compressed_len < (int)sizeof(header)) {
+          utils::log("[{}] received bogus header size, breaking connection.", direction);
           break;
+        }
 
-        auto processed = packet::tcp::process(header, encrypted_data);
+        size_t payload_size = header.compressed_len - sizeof(header);
+        std::vector<uint8_t> payload_data(payload_size);
+
+        if (payload_size > 0) {
+          if (auto read_result = source.read_n(payload_data.data(), payload_size);
+              !read_result || read_result.value() != payload_size)
+            break;
+        }
+
+        {
+          std::string hexdump;
+          size_t bytes_to_dump = std::min(payload_data.size(), static_cast<size_t>(64));
+          for (size_t i = 0; i < bytes_to_dump; ++i) {
+            hexdump += std::format("{:02x} ", payload_data[i]);
+          }
+          if (!hexdump.empty()) {
+            utils::log("[{}] payload hexdump (first {} bytes): {}", direction, bytes_to_dump, hexdump);
+          }
+        }
+
+        auto processed = packet::tcp::process(header, payload_data);
         if (processed) {
           std::string name = "unknown";
           if (processed->content.contains("data") && processed->content["data"].contains("name")) {
             name = processed->content["data"]["name"];
           }
           utils::log("[{}] packet: {}", direction, name);
-
           utils::log("[{}] packet body:\n{}", direction, processed->content.dump(2));
 
-          /*
-          // TODO: add back in when we have a working udp proxy (reencryption)
-          if (direction == "SERVER -> CLIENT" && name == "mrooms.join_room") {
-            packet::tcp::handle_join(processed->content, "127.0.0.1", [](auto ip, auto port, auto key) {
-              std::thread(run_udp, ip, port, key).detach();
-            });
-            auto rebuilt = packet::tcp::rebuild(processed->content, processed->original_unk_byte, processed->iv);
-            destination.write_n(&rebuilt.new_header, sizeof(rebuilt.new_header));
-            destination.write_n(rebuilt.new_encrypted_data.data(), rebuilt.new_encrypted_data.size());
-            continue;
-          }
-          */
         } else {
           utils::log("[{}] failed to process packet, forwarding raw data", direction);
         }
 
         destination.write_n(&header, sizeof(header));
-        destination.write_n(encrypted_data.data(), encrypted_data.size());
+        if (payload_size > 0) {
+          destination.write_n(payload_data.data(), payload_data.size());
+        }
       }
     } catch (const std::exception& e) {
       utils::log("exception in relay {}: {}", direction, e.what());

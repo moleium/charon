@@ -7,15 +7,23 @@
 #include <utils/platform.hpp>
 
 #ifdef CHARON_WINDOWS
-#include <winsock2.h>
 #include <Windows.h>
+#include <winsock2.h>
 #endif
+
+#include <atomic>
 
 import zydis;
 // clang-format on
 
 namespace {
+  static std::atomic<bool> g_is_initialized{false};
+
   void main_thread() {
+    if (g_is_initialized.exchange(true)) {
+      return;
+    }
+
     utils::show_console();
 
     if (!zydis::init(ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64, ZYDIS_FORMATTER_STYLE_INTEL)) {
