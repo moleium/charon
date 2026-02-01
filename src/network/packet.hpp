@@ -72,6 +72,13 @@ namespace proxy::packet {
       int32_t compressed_len;  // includes the size of this header (9 bytes)
       int32_t decompressed_len;
     };
+
+    struct encrypted_header {
+      int32_t encrypted_len;
+      int32_t decrypted_len;
+      int32_t unk2; // same as decrypted_len
+      int32_t unk3; // same as decrypted_len
+    };
     #pragma pack(pop)
     // clang-format on
 
@@ -120,6 +127,70 @@ namespace proxy::packet {
       return std::nullopt;
     }
 
+    std::optional<parsed_packet> process_encrypted(const std::vector<uint8_t>& full_packet_data) {
+      if (full_packet_data.size() < sizeof(encrypted_header)) {
+        utils::log("encrypted packet too small");
+        return std::nullopt;
+      }
+
+      encrypted_header enc_hdr;
+      std::memcpy(&enc_hdr, full_packet_data.data(), sizeof(encrypted_header));
+
+      if (enc_hdr.encrypted_len <= 0 || enc_hdr.encrypted_len > 1000000) {
+        utils::log("invalid encrypted_len: {}", enc_hdr.encrypted_len);
+        return std::nullopt;
+      }
+
+      if (full_packet_data.size() < sizeof(encrypted_header) + enc_hdr.encrypted_len) {
+        utils::log("encrypted packet data incomplete");
+        return std::nullopt;
+      }
+
+      // construct iv as [0, decrypted_len, decrypted_len, decrypted_len]
+      std::array<uint8_t, 16> iv;
+      std::memset(iv.data(), 0, 4);
+      std::memcpy(iv.data() + 4, &enc_hdr.decrypted_len, 4);
+      std::memcpy(iv.data() + 8, &enc_hdr.decrypted_len, 4);
+      std::memcpy(iv.data() + 12, &enc_hdr.decrypted_len, 4);
+
+      std::vector<uint8_t> encrypted_data(
+        full_packet_data.begin() + sizeof(encrypted_header),
+        full_packet_data.begin() + sizeof(encrypted_header) + enc_hdr.encrypted_len
+      );
+
+      auto decrypted_opt = crypto::aes_128_cbc_decrypt(encrypted_data, evp_key, iv);
+      if (!decrypted_opt) {
+        utils::log("aes decryption failed");
+        return std::nullopt;
+      }
+
+      auto& decrypted = *decrypted_opt;
+
+      if (decrypted.size() < sizeof(header)) {
+        utils::log("decrypted data too small for header");
+        return std::nullopt;
+      }
+
+      header inner_hdr;
+      std::memcpy(&inner_hdr, decrypted.data(), sizeof(header));
+
+      size_t payload_size = inner_hdr.compressed_len - sizeof(header);
+      if (sizeof(header) + payload_size > decrypted.size()) {
+        utils::log("decrypted payload size mismatch");
+        return std::nullopt;
+      }
+
+      std::vector<uint8_t> payload(
+        decrypted.begin() + sizeof(header), decrypted.begin() + sizeof(header) + payload_size
+      );
+
+      auto result = process(inner_hdr, payload);
+      if (result) {
+        result->iv = iv;
+      }
+      return result;
+    }
+
     rebuilt_packet rebuild(const nlohmann::json& content, uint8_t unk_byte, const std::array<uint8_t, 16>& iv) {
       std::string json_str = content.dump();
 
@@ -138,6 +209,38 @@ namespace proxy::packet {
       header new_hdr = {1, (int32_t)(compressed_size + sizeof(header)), (int32_t)raw_payload.size()};
 
       return rebuilt_packet{new_hdr, compressed_payload};
+    }
+
+    std::vector<uint8_t> rebuild_encrypted(const nlohmann::json& content, uint8_t unk_byte) {
+      auto unencrypted = rebuild(content, unk_byte, {0});
+
+      std::vector<uint8_t> packet_to_encrypt(sizeof(header) + unencrypted.new_encrypted_data.size());
+      std::memcpy(packet_to_encrypt.data(), &unencrypted.new_header, sizeof(header));
+      std::memcpy(
+        packet_to_encrypt.data() + sizeof(header), unencrypted.new_encrypted_data.data(),
+        unencrypted.new_encrypted_data.size()
+      );
+
+      int32_t decompressed_len = unencrypted.new_header.decompressed_len;
+
+      // construct iv as [0, decompressed_len, decompressed_len, decompressed_len]
+      std::array<uint8_t, 16> iv;
+      std::memset(iv.data(), 0, 4);
+      std::memcpy(iv.data() + 4, &decompressed_len, 4);
+      std::memcpy(iv.data() + 8, &decompressed_len, 4);
+      std::memcpy(iv.data() + 12, &decompressed_len, 4);
+
+      auto encrypted = crypto::aes_128_cbc_encrypt(packet_to_encrypt, evp_key, iv);
+
+      encrypted_header enc_hdr{
+        static_cast<int32_t>(encrypted.size()), decompressed_len, decompressed_len, decompressed_len
+      };
+
+      std::vector<uint8_t> final_packet(sizeof(encrypted_header) + encrypted.size());
+      std::memcpy(final_packet.data(), &enc_hdr, sizeof(encrypted_header));
+      std::memcpy(final_packet.data() + sizeof(encrypted_header), encrypted.data(), encrypted.size());
+
+      return final_packet;
     }
 
     void handle_join(
