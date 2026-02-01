@@ -36,40 +36,53 @@ namespace patcher {
     uint8_t* static_buffer = mem_byte + 2048;
     std::memset(static_buffer, 0x01, 256);
 
-    code_block payload;
-
-#ifdef CHARON_WINDOWS
-    payload << mov(registers::rax, 0x0101010101010101);
-    payload << mov(qword_ptr(registers::rdx, 0), registers::rax);
-    payload << mov(qword_ptr(registers::rdx, 8), registers::rax);
-    payload << ret();
-#else
-    payload << mov(registers::rax, 0x0101010101010101);
-    payload << mov(qword_ptr(registers::rdi, 0), registers::rax);
-    payload << mov(qword_ptr(registers::rdi, 8), registers::rax);
-    payload << ret();
-#endif
-
-    auto encoded_payload = payload.encode();
-    std::memcpy(mem_byte, encoded_payload.data(), encoded_payload.size());
-
     code_block trampoline;
     trampoline << mov(registers::rax, reinterpret_cast<uintptr_t>(mem));
     trampoline << instruction(ZYDIS_MNEMONIC_CALL, registers::rax);
 
     auto trampoline_bytes = trampoline.encode();
 
-    auto original_instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site));
-    if (!original_instr)
-      return std::unexpected("failed to decode instruction at patch site");
-
     size_t overwritten_len = 0;
+    std::vector<uint8_t> stolen_bytes;
+    bool first_instr = true;
+
     while (overwritten_len < trampoline_bytes.size()) {
       auto instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site) + overwritten_len);
       if (!instr)
         return std::unexpected("failed to disassemble during overwrite calculation");
+
+      if (first_instr) {
+        first_instr = false;
+      } else {
+        const uint8_t* p = static_cast<const uint8_t*>(patch_site) + overwritten_len;
+        stolen_bytes.insert(stolen_bytes.end(), p, p + instr->decoded.length);
+      }
+
       overwritten_len += instr->decoded.length;
     }
+
+    code_block payload;
+
+#ifdef CHARON_WINDOWS
+    payload << mov(registers::rax, 0x0101010101010101);
+    payload << mov(qword_ptr(registers::rdx, 0), registers::rax);
+    payload << mov(qword_ptr(registers::rdx, 8), registers::rax);
+#else
+    payload << mov(registers::rax, 0x0101010101010101);
+    payload << mov(qword_ptr(registers::rdi, 0), registers::rax);
+    payload << mov(qword_ptr(registers::rdi, 8), registers::rax);
+#endif
+
+    auto encoded_payload = payload.encode();
+
+    encoded_payload.insert(encoded_payload.end(), stolen_bytes.begin(), stolen_bytes.end());
+
+    code_block ret_block;
+    ret_block << ret();
+    auto ret_bytes = ret_block.encode();
+    encoded_payload.insert(encoded_payload.end(), ret_bytes.begin(), ret_bytes.end());
+
+    std::memcpy(mem_byte, encoded_payload.data(), encoded_payload.size());
 
     std::vector<uint8_t> final_patch = trampoline_bytes;
     while (final_patch.size() < overwritten_len) {
