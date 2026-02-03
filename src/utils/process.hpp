@@ -110,7 +110,6 @@ namespace utils::process {
     uintptr_t target_data_addr = *string_addr_opt;
     utils::log("found anchor string at {:#x}", target_data_addr);
 
-#ifdef CHARON_LINUX
     const uint8_t* ref_site = nullptr;
     {
       const uint8_t* p = mod.text_section.data();
@@ -151,14 +150,15 @@ namespace utils::process {
     }
     utils::log("found reference to string at {:#x}", reinterpret_cast<uintptr_t>(ref_site));
 
-    constexpr size_t search_window_size = 512;
+    constexpr size_t search_window_size = 2048;
     const uint8_t* window_start = (ref_site > mod.text_section.data() + search_window_size)
                                     ? ref_site - search_window_size
                                     : mod.text_section.data();
 
     const uint8_t* p = window_start;
     const uint8_t* end = ref_site;
-    const uint8_t* last_mov_inst = nullptr;
+    const uint8_t* last_setup_inst = nullptr;
+    const uint8_t* candidate_call = nullptr;
 
     while (p < end) {
       auto instr_opt = zydis::disassemble(p);
@@ -168,77 +168,46 @@ namespace utils::process {
       }
       const auto& instr = *instr_opt;
 
-      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_MOV && instr.decoded.operand_count_visible == 2 &&
+      // mov reg, 0x10
+      // windows: mov r8d, 0x10 (or r8) - 3rd argument
+      // linux: mov ESI, 0x10 (or rsi) - 2nd argument
+      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_MOV && instr.decoded.operand_count_visible >= 2 &&
           instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-          (instr.operands[0].reg.value == ZYDIS_REGISTER_ESI || instr.operands[0].reg.value == ZYDIS_REGISTER_SI) &&
           instr.operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && instr.operands[1].imm.value.u == 0x10) {
-        last_mov_inst = p;
+
+        auto reg = instr.operands[0].reg.value;
+        bool is_setup = false;
+
+#ifdef CHARON_WINDOWS
+        if (reg == ZYDIS_REGISTER_R8D || reg == ZYDIS_REGISTER_R8)
+          is_setup = true;
+#else
+        if (reg == ZYDIS_REGISTER_ESI || reg == ZYDIS_REGISTER_SI)
+          is_setup = true;
+#endif
+
+        if (is_setup) {
+          last_setup_inst = p;
+        }
       }
 
-      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_CALL && last_mov_inst) {
-        if ((p - last_mov_inst) < 50) { // check if call is close to the mov
+      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_CALL && last_setup_inst) {
+        if ((p - last_setup_inst) < 64) {
+          candidate_call = p;
           utils::log(
             "found probable call at {:#x} after size setup at {:#x}", reinterpret_cast<uintptr_t>(p),
-            reinterpret_cast<uintptr_t>(last_mov_inst)
+            reinterpret_cast<uintptr_t>(last_setup_inst)
           );
-          return utils::address{const_cast<uint8_t*>(p)};
         }
       }
       p += instr.decoded.length;
     }
-    return std::unexpected("could not find call signature near string reference on linux");
 
-#else
-    utils::address last_call_site = nullptr;
-    const uint8_t* p = mod.text_section.data();
-    const uint8_t* end = p + mod.text_section.size();
-
-    while (p < end) {
-      auto instr_opt = zydis::disassemble(p);
-      if (!instr_opt) {
-        p++;
-        continue;
-      }
-      const auto& instr = *instr_opt;
-
-      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_CALL) {
-        last_call_site = const_cast<uint8_t*>(p);
-      }
-
-      bool found_ref = false;
-      if (instr.is_relative()) {
-        auto abs_opt = instr.get_absolute_address(reinterpret_cast<uintptr_t>(p));
-        if (abs_opt && *abs_opt == target_data_addr) {
-          found_ref = true;
-        }
-      }
-
-      if (!found_ref) {
-        for (int i = 0; i < instr.decoded.operand_count_visible; ++i) {
-          const auto& op = instr.operands[i];
-          if (op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-            if (op.imm.value.u == target_data_addr) {
-              found_ref = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if (found_ref) {
-        utils::log("found reference at {:#x}, last call was {:#x}", reinterpret_cast<uintptr_t>(p), last_call_site);
-
-        if (last_call_site) {
-          return last_call_site;
-        }
-        return std::unexpected("found string reference but no preceding call detected");
-      }
-
-      p += instr.decoded.length;
+    if (candidate_call) {
+      return utils::address{const_cast<uint8_t*>(candidate_call)};
     }
 
-    return std::unexpected("reference to string not found in text section");
-#endif
+    return std::unexpected("could not find call signature near string reference");
   }
 
 } // namespace utils::process
