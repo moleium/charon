@@ -127,7 +127,8 @@ namespace proxy::packet {
       return std::nullopt;
     }
 
-    std::optional<parsed_packet> process_encrypted(const std::vector<uint8_t>& full_packet_data) {
+    std::optional<parsed_packet>
+    process_encrypted(const std::vector<uint8_t>& full_packet_data, const std::array<uint8_t, 16>& key) {
       if (full_packet_data.size() < sizeof(encrypted_header)) {
         utils::log("encrypted packet too small");
         return std::nullopt;
@@ -158,7 +159,7 @@ namespace proxy::packet {
         full_packet_data.begin() + sizeof(encrypted_header) + enc_hdr.encrypted_len
       );
 
-      auto decrypted_opt = crypto::aes_128_cbc_decrypt(encrypted_data, evp_key, iv);
+      auto decrypted_opt = crypto::aes_128_cbc_decrypt(encrypted_data, key, iv);
       if (!decrypted_opt) {
         utils::log("aes decryption failed");
         return std::nullopt;

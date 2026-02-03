@@ -69,7 +69,7 @@ namespace proxy {
           std::memcpy(full_packet.data(), &enc_hdr, sizeof(enc_hdr));
           std::memcpy(full_packet.data() + sizeof(enc_hdr), encrypted_data.data(), enc_hdr.encrypted_len);
 
-          auto processed = packet::tcp::process_encrypted(full_packet);
+          auto processed = packet::tcp::process_encrypted(full_packet, packet::evp_key);
           if (processed) {
             std::string name = "unknown";
             if (processed->content.contains("data") && processed->content["data"].contains("name")) {
