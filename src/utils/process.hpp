@@ -150,7 +150,7 @@ namespace utils::process {
     }
     utils::log("found reference to string at {:#x}", reinterpret_cast<uintptr_t>(ref_site));
 
-    constexpr size_t search_window_size = 2048;
+    constexpr size_t search_window_size = 1500;
     const uint8_t* window_start = (ref_site > mod.text_section.data() + search_window_size)
                                     ? ref_site - search_window_size
                                     : mod.text_section.data();
@@ -158,7 +158,8 @@ namespace utils::process {
     const uint8_t* p = window_start;
     const uint8_t* end = ref_site;
     const uint8_t* last_setup_inst = nullptr;
-    const uint8_t* candidate_call = nullptr;
+
+    std::vector<const uint8_t*> candidates;
 
     while (p < end) {
       auto instr_opt = zydis::disassemble(p);
@@ -169,45 +170,44 @@ namespace utils::process {
       const auto& instr = *instr_opt;
 
       // mov reg, 0x10
-      // windows: mov r8d, 0x10 (or r8) - 3rd argument
-      // linux: mov ESI, 0x10 (or rsi) - 2nd argument
+      bool is_setup = false;
       if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_MOV && instr.decoded.operand_count_visible >= 2 &&
           instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
           instr.operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && instr.operands[1].imm.value.u == 0x10) {
 
         auto reg = instr.operands[0].reg.value;
-        bool is_setup = false;
-
 #ifdef CHARON_WINDOWS
+        // R8D or R8 (3rd arg)
         if (reg == ZYDIS_REGISTER_R8D || reg == ZYDIS_REGISTER_R8)
           is_setup = true;
 #else
+        // ESI or RSI (2nd arg)
         if (reg == ZYDIS_REGISTER_ESI || reg == ZYDIS_REGISTER_SI)
           is_setup = true;
 #endif
-
-        if (is_setup) {
-          last_setup_inst = p;
-        }
       }
 
-      if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_CALL && last_setup_inst) {
-        if ((p - last_setup_inst) < 64) {
-          candidate_call = p;
+      if (is_setup) {
+        last_setup_inst = p;
+      } else if (instr.decoded.mnemonic == ZYDIS_MNEMONIC_CALL && last_setup_inst) {
+        if ((p - last_setup_inst) < 100) {
+          candidates.push_back(p);
           utils::log(
-            "found probable call at {:#x} after size setup at {:#x}", reinterpret_cast<uintptr_t>(p),
+            "found candidate call at {:#x} (setup at {:#x})", reinterpret_cast<uintptr_t>(p),
             reinterpret_cast<uintptr_t>(last_setup_inst)
           );
+          last_setup_inst = nullptr;
         }
       }
+
       p += instr.decoded.length;
     }
 
-    if (candidate_call) {
-      return utils::address{const_cast<uint8_t*>(candidate_call)};
+    if (!candidates.empty()) {
+      return utils::address{const_cast<uint8_t*>(candidates.front())};
     }
 
-    return std::unexpected("could not find call signature near string reference");
+    return std::unexpected("could not find rand_bytes call signature near string reference");
   }
 
 } // namespace utils::process

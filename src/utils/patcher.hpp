@@ -16,7 +16,7 @@ using namespace zydis::assembler;
 
 namespace patcher {
   inline std::expected<void, std::string> apply_patch() {
-    const auto anchor = "-----BEGIN PUBLIC KEY-----\nMIIBIj";
+    const auto anchor = "session_key_evp";
 
     auto patch_site_exp = utils::process::find_call(anchor);
     if (!patch_site_exp) {

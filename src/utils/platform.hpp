@@ -22,6 +22,7 @@
 #include <expected>
 #include <filesystem>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -82,6 +83,24 @@ private:
 #else
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return ptr == MAP_FAILED ? nullptr : ptr;
+#endif
+  }
+
+  inline std::string get_process_name() {
+#ifdef CHARON_WINDOWS
+    char buffer[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, buffer, sizeof(buffer)) == 0) {
+      return {};
+    }
+    return std::filesystem::path(buffer).filename().string();
+#else
+    char buffer[1024];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len == -1) {
+      return {};
+    }
+    buffer[len] = '\0';
+    return std::filesystem::path(buffer).filename().string();
 #endif
   }
 } // namespace utils::platform

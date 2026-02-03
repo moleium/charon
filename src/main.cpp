@@ -62,6 +62,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 }
 #else
 __attribute__((constructor)) void linux_main() {
+  if (utils::platform::get_process_name() != "aces") {
+    return;
+  }
   std::jthread patch_thread(main_thread);
   patch_thread.detach();
 }
