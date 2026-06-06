@@ -3,7 +3,7 @@
 	url = https://github.com/fpagliughi/sockpp
 [submodule "vendor/zydis-bridge"]
 	path = vendor/zydis-bridge
-	url = https://github.com/bibles-org/zydis-bridge
+	url = https://github.com/moleium/zydis-bridge.git
 [submodule "vendor/lz4"]
 	path = vendor/lz4
 	url = https://github.com/lz4/lz4
