@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <ranges>
@@ -10,7 +11,6 @@
 #include <utils/process.hpp>
 
 import zydis;
-import address;
 
 using namespace zydis::assembler;
 
@@ -23,8 +23,8 @@ namespace patcher {
       return std::unexpected(patch_site_exp.error());
     }
 
-    utils::address patch_site = *patch_site_exp;
-    utils::log("target call found at: {:#x}", patch_site);
+    std::uint8_t* patch_site = *patch_site_exp;
+    utils::log("target call found at: {:#x}", reinterpret_cast<std::uintptr_t>(patch_site));
 
     const size_t alloc_size = 4096;
     auto* mem = utils::platform::allocate_exec_trampoline(alloc_size);
@@ -47,14 +47,14 @@ namespace patcher {
     bool first_instr = true;
 
     while (overwritten_len < trampoline_bytes.size()) {
-      auto instr = zydis::disassemble(static_cast<const uint8_t*>(patch_site) + overwritten_len);
+      auto instr = zydis::disassemble(patch_site + overwritten_len);
       if (!instr)
         return std::unexpected("failed to disassemble during overwrite calculation");
 
       if (first_instr) {
         first_instr = false;
       } else {
-        const uint8_t* p = static_cast<const uint8_t*>(patch_site) + overwritten_len;
+        const uint8_t* p = patch_site + overwritten_len;
         stolen_bytes.insert(stolen_bytes.end(), p, p + instr->decoded.length);
       }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <ranges>
@@ -10,7 +11,6 @@
 #include <vector>
 
 import zydis;
-import address;
 
 namespace utils::process {
 
@@ -96,7 +96,7 @@ namespace utils::process {
     return reinterpret_cast<uintptr_t>(&*it);
   }
 
-  inline std::expected<utils::address, std::string> find_call(std::string_view data_string) {
+  inline std::expected<std::uint8_t*, std::string> find_call(std::string_view data_string) {
     auto mod_opt = get_main_module();
     if (!mod_opt)
       return std::unexpected("failed to get main module info");
@@ -204,7 +204,7 @@ namespace utils::process {
     }
 
     if (!candidates.empty()) {
-      return utils::address{const_cast<uint8_t*>(candidates.front())};
+      return const_cast<uint8_t*>(candidates.front());
     }
 
     return std::unexpected("could not find rand_bytes call signature near string reference");

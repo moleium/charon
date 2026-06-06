@@ -16,7 +16,6 @@
 #include <Psapi.h>
 
 import zydis;
-import address;
 
 namespace utils::pattern {
 
@@ -79,7 +78,7 @@ namespace utils::pattern {
     return std::span{start_addr, size};
   }
 
-  std::expected<address, error> find(std::span<const std::uint8_t> memory, std::string_view pattern) {
+  std::expected<const std::uint8_t*, error> find(std::span<const std::uint8_t> memory, std::string_view pattern) {
     auto parsed_pattern_exp = detail::parse_pattern(pattern);
     if (!parsed_pattern_exp) {
       return std::unexpected(parsed_pattern_exp.error());
@@ -108,7 +107,7 @@ namespace utils::pattern {
       }
 
       if (j < 0) {
-        return address{memory.data() + pos};
+        return memory.data() + pos;
       }
 
       pos += bad_char_shift[memory[pos + pattern_len - 1]];
@@ -117,7 +116,7 @@ namespace utils::pattern {
     return std::unexpected(error::pattern_not_found);
   }
 
-  std::expected<address, error> find(std::string_view pattern) {
+  std::expected<const std::uint8_t*, error> find(std::string_view pattern) {
     auto memory_region = get_mem();
     if (!memory_region) {
       return std::unexpected(error::memory_region_not_found);
@@ -125,19 +124,19 @@ namespace utils::pattern {
     return find(*memory_region, pattern);
   }
 
-  std::expected<address, error> find_rva(std::span<const std::uint8_t> memory, std::string_view pattern) {
+  std::expected<std::uintptr_t, error> find_rva(std::span<const std::uint8_t> memory, std::string_view pattern) {
     auto pattern_addr_exp = find(memory, pattern);
     if (!pattern_addr_exp) {
       return std::unexpected(pattern_addr_exp.error());
     }
-    const address pattern_addr = *pattern_addr_exp;
+    const std::uint8_t* pattern_addr = *pattern_addr_exp;
 
-    auto instruction_opt = zydis::disassemble(static_cast<const std::uint8_t*>(pattern_addr));
+    auto instruction_opt = zydis::disassemble(pattern_addr);
     if (!instruction_opt) {
       return std::unexpected(error::disassembly_failed);
     }
 
-    auto absolute_addr_opt = instruction_opt->get_absolute_address(pattern_addr);
+    auto absolute_addr_opt = instruction_opt->get_absolute_address(reinterpret_cast<std::uintptr_t>(pattern_addr));
     if (!absolute_addr_opt) {
       return std::unexpected(error::rip_relative_operand_not_found);
     }
@@ -145,7 +144,7 @@ namespace utils::pattern {
     return *absolute_addr_opt;
   }
 
-  std::expected<address, error> find_rva(std::string_view pattern) {
+  std::expected<std::uintptr_t, error> find_rva(std::string_view pattern) {
     auto memory_region = get_mem();
     if (!memory_region) {
       return std::unexpected(error::memory_region_not_found);
